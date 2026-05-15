@@ -1,4 +1,4 @@
-const CACHE = 'water-v1.0';
+const CACHE = 'water-v2.0';
 const ASSETS = [
   './',
   './index.html',
