@@ -781,19 +781,49 @@ function toast(msg) {
 </script>
 
 <script>
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('sw.js?v=2.0').then(reg => {
-      reg.addEventListener('updatefound', () => {
-        const nw = reg.installing;
-        nw.addEventListener('statechange', () => {
-          if (nw.state === 'installed' && navigator.serviceWorker.controller) {
-            toast('Update verfügbar – bitte neu laden');
+if("serviceWorker" in navigator){
+  window.addEventListener("load",function(){
+    navigator.serviceWorker.register("sw.js?v=1.0").then(function(reg){
+      reg.update();
+      reg.addEventListener("updatefound",function(){
+        var nw=reg.installing;
+        nw.addEventListener("statechange",function(){
+          if(nw.state==="installed"&&navigator.serviceWorker.controller){
+            showUpdateToast(nw);
           }
         });
       });
+      if(reg.waiting){
+        showUpdateToast(reg.waiting);
+      }
+      setTimeout(function(){
+        reg.update().then(function(){
+          if(reg.waiting) showUpdateToast(reg.waiting);
+        });
+      }, 2000);
+    }).catch(function(err){console.log("SW:",err);});
+    var ref=false;
+    navigator.serviceWorker.addEventListener("controllerchange",function(){
+      if(!ref){ref=true;window.location.reload();}
     });
   });
+}
+function showUpdateToast(w){
+  var t=document.getElementById("toast");
+  if(!t)return;
+  t.innerHTML="&#128260; Update verf\u00fcgbar <button onclick=\"applyUpdate()\" style=\"background:#3b9eff;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:700;cursor:pointer;margin-left:8px;-webkit-tap-highlight-color:transparent\">Jetzt laden</button>";
+  t.classList.add("show");
+  t.style.whiteSpace="nowrap";
+  t.style.bottom="60px";
+  t.style.pointerEvents="all";
+  window._pw=w;
+}
+function applyUpdate(){
+  if(window._pw){
+    window._pw.postMessage({type:"SKIP_WAITING"});
+  } else {
+    window.location.reload(true);
+  }
 }
 </script>
 </body>
