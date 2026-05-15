@@ -294,9 +294,14 @@
 
     .hist-ml {
       font-family: 'Syne', sans-serif; font-weight: 600; font-size: 16px;
-      color: var(--text);
+      color: var(--text); flex: 1;
     }
     .hist-ml-unit { font-size: 12px; color: var(--text-dim); margin-left: 2px; }
+
+    .hist-pct-entry {
+      font-family: 'DM Mono', monospace; font-size: 12px;
+      color: var(--water); min-width: 36px; text-align: right;
+    }
 
     .hist-loading {
       text-align: center; color: var(--text-dim); font-size: 12px;
@@ -717,13 +722,17 @@ function renderHistory() {
     return;
   }
 
-  list.innerHTML = entries.map((e, i) => `
+  list.innerHTML = entries.map((e, i) => {
+    const running = entries.slice(0, i + 1).reduce((a, b) => a + b.ml, 0);
+    const pct = Math.round((running / goal) * 100);
+    return `
     <div class="hist-entry">
       <div class="hist-time">${e.time || '--:--'}</div>
       <div class="hist-dot"></div>
       <div class="hist-ml">${e.ml}<span class="hist-ml-unit"> ml</span></div>
+      <div class="hist-pct-entry">${pct}%</div>
     </div>
-  `).join('');
+  `}).join('');
 }
 
 function histNav(delta) {
