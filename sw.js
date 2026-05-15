@@ -1,7 +1,9 @@
-const CACHE = "water-v3.0";
+const CACHE = "water-v4.0";
 const ASSETS = [
   "./index.html",
-  "./manifest.json"
+  "./manifest.json",
+  "./icons/icon-192.png",
+  "./icons/icon-512.png"
 ];
 
 self.addEventListener("install", function(e) {
