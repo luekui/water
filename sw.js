@@ -1,55 +1,55 @@
-const CACHE = 'water-v2.0';
+const CACHE = "water-v3.0";
 const ASSETS = [
-  './',
-  './index.html',
-  './manifest.json',
+  "./index.html",
+  "./manifest.json"
 ];
 
-self.addEventListener('install', e => {
+self.addEventListener("install", function(e) {
   e.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())
+    caches.open(CACHE).then(function(cache) {
+      return cache.addAll(ASSETS);
+    })
   );
+  // Kein skipWaiting – warten bis App manuell updated
 });
 
-self.addEventListener('activate', e => {
+self.addEventListener("activate", function(e) {
   e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
+    caches.keys().then(function(keys) {
+      return Promise.all(
+        keys.filter(function(k) { return k !== CACHE; })
+            .map(function(k) { return caches.delete(k); })
+      );
+    })
   );
+  self.clients.claim();
 });
 
-self.addEventListener('fetch', e => {
-  const url = new URL(e.request.url);
-
-  // API-Calls (Apps Script) → immer Network
-  if (url.hostname.includes('script.google.com')) {
+self.addEventListener("fetch", function(e) {
+  // Apps Script API calls immer live
+  if (e.request.url.indexOf("script.google.com") >= 0) {
     e.respondWith(fetch(e.request));
     return;
   }
 
-  // Google Fonts → Network first, Cache fallback
-  if (url.hostname.includes('fonts.googleapis.com') || url.hostname.includes('fonts.gstatic.com')) {
-    e.respondWith(
-      fetch(e.request).catch(() => caches.match(e.request))
-    );
-    return;
-  }
-
-  // HTML → Network first (damit Updates ankommen)
-  if (e.request.mode === 'navigate') {
-    e.respondWith(
-      fetch(e.request).catch(() => caches.match(e.request))
-    );
-    return;
-  }
-
-  // Rest → Cache first
   e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request).then(resp => {
-      const clone = resp.clone();
-      caches.open(CACHE).then(c => c.put(e.request, clone));
-      return resp;
-    }))
+    caches.match(e.request).then(function(cached) {
+      // HTML: network first, cache fallback
+      if (e.request.url.indexOf(".html") >= 0) {
+        return fetch(e.request).then(function(response) {
+          var clone = response.clone();
+          caches.open(CACHE).then(function(cache) { cache.put(e.request, clone); });
+          return response;
+        }).catch(function() { return cached; });
+      }
+      return cached || fetch(e.request);
+    })
   );
+});
+
+// Update-Trigger vom App
+self.addEventListener("message", function(e) {
+  if (e.data && e.data.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
 });
