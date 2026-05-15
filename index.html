@@ -241,35 +241,6 @@
       font-size: 10px; color: var(--text-dim); font-weight: 300; margin-top: 1px;
     }
 
-    /* History summary */
-    .hist-summary {
-      margin: 0 20px 16px;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 14px; padding: 16px 20px;
-      display: flex; align-items: center; justify-content: space-between;
-    }
-
-    .hist-total {
-      font-family: 'Syne', sans-serif; font-weight: 800; font-size: 28px;
-      color: var(--water);
-    }
-    .hist-total span { font-size: 14px; color: var(--text-dim); font-weight: 400; }
-
-    .hist-bar-wrap {
-      flex: 1; margin: 0 16px;
-      height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden;
-    }
-    .hist-bar {
-      height: 100%; background: var(--water); border-radius: 4px;
-      transition: width 0.5s cubic-bezier(.4,0,.2,1);
-    }
-    .hist-bar.over { background: var(--success); }
-
-    .hist-pct {
-      font-family: 'Syne', sans-serif; font-weight: 700; font-size: 14px;
-      color: var(--text-dim); min-width: 42px; text-align: right;
-    }
-
     /* History log list */
     .hist-list {
       padding: 0 20px 32px;
@@ -467,15 +438,9 @@
       <button class="day-nav-btn" id="hist-next" onclick="histNav(+1)" disabled>›</button>
     </div>
 
-    <!-- Summary -->
-    <div class="hist-summary">
-      <div>
-        <div class="hist-total" id="hist-total">0 <span>ml</span></div>
-      </div>
-      <div class="hist-bar-wrap">
-        <div class="hist-bar" id="hist-bar" style="width:0%"></div>
-      </div>
-      <div class="hist-pct" id="hist-pct">0%</div>
+    <!-- Chart -->
+    <div style="margin: 0 20px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px 12px 10px;">
+      <canvas id="hist-chart" height="160" style="width:100%;display:block;"></canvas>
     </div>
 
     <!-- Log -->
@@ -688,10 +653,8 @@ async function loadHistory() {
   document.getElementById('hist-next').disabled = histOffset >= 0;
   document.getElementById('hist-list').innerHTML = '<div class="hist-loading">Lade…</div>';
 
-  // Reset summary
-  document.getElementById('hist-total').innerHTML = '… <span>ml</span>';
-  document.getElementById('hist-bar').style.width = '0%';
-  document.getElementById('hist-pct').textContent = '0%';
+  // Reset chart
+  drawChart([], config.goal);
 
   try {
     histData = await api({ action: 'history', date: dateStr });
@@ -704,18 +667,12 @@ async function loadHistory() {
 
 function renderHistory() {
   if (!histData) return;
-  const total = histData.total_ml || 0;
-  const goal  = config.goal;
-  const pct   = Math.min(Math.round((total / goal) * 100), 100);
-
-  document.getElementById('hist-total').innerHTML = `${total.toLocaleString('de-CH')} <span>ml</span>`;
-  const bar = document.getElementById('hist-bar');
-  bar.style.width = pct + '%';
-  bar.classList.toggle('over', total >= goal);
-  document.getElementById('hist-pct').textContent = pct + '%';
-
+  const goal    = config.goal;
   const entries = histData.eintraege || [];
-  const list = document.getElementById('hist-list');
+  const list    = document.getElementById('hist-list');
+
+  // Draw chart
+  drawChart(entries, goal);
 
   if (entries.length === 0) {
     list.innerHTML = '<div class="hist-loading">Keine Einträge für diesen Tag</div>';
@@ -733,6 +690,136 @@ function renderHistory() {
       <div class="hist-pct-entry">${pct}%</div>
     </div>
   `}).join('');
+}
+
+function drawChart(entries, goal) {
+  const canvas = document.getElementById('hist-chart');
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.offsetWidth || canvas.parentElement.clientWidth - 24;
+  const H = 160;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const PAD_L = 44, PAD_R = 12, PAD_T = 12, PAD_B = 24;
+  const cW = W - PAD_L - PAD_R;
+  const cH = H - PAD_T - PAD_B;
+
+  // Colors from CSS vars (read from root)
+  const colWater   = '#3b9eff';
+  const colSuccess = '#4ecb8d';
+  const colDim     = '#7aa8d4';
+  const colBorder  = '#1e3a5f';
+  const colSurface2= '#132844';
+
+  // Y-axis max: goal * 1.2 or actual total if higher
+  const total = entries.reduce((a, b) => a + b.ml, 0);
+  const yMax  = Math.max(goal * 1.2, total * 1.05, 500);
+
+  function xPos(minutes) { return PAD_L + (minutes / 1440) * cW; }
+  function yPos(ml)      { return PAD_T + cH - (ml / yMax) * cH; }
+
+  // Grid lines & Y labels
+  ctx.strokeStyle = colBorder;
+  ctx.lineWidth = 1;
+  ctx.fillStyle = colDim;
+  ctx.font = '10px DM Mono, monospace';
+  ctx.textAlign = 'right';
+  const ySteps = [0, goal * 0.25, goal * 0.5, goal * 0.75, goal].map(v => Math.round(v));
+  ySteps.forEach(v => {
+    const y = yPos(v);
+    ctx.globalAlpha = 0.4;
+    ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(W - PAD_R, y); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillText(v >= 1000 ? (v/1000).toFixed(1)+'L' : v+'ml', PAD_L - 4, y + 3);
+  });
+
+  // X-axis labels (0, 6, 12, 18, 24)
+  ctx.textAlign = 'center';
+  [0, 6, 12, 18, 24].forEach(h => {
+    const x = xPos(h * 60);
+    ctx.globalAlpha = 0.4;
+    ctx.beginPath(); ctx.moveTo(x, PAD_T); ctx.lineTo(x, H - PAD_B); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillText(h + 'h', x, H - PAD_B + 14);
+  });
+
+  // Goal line (dashed)
+  ctx.save();
+  ctx.setLineDash([6, 4]);
+  ctx.strokeStyle = colSuccess;
+  ctx.lineWidth = 1.5;
+  ctx.globalAlpha = 0.7;
+  const gy = yPos(goal);
+  ctx.beginPath(); ctx.moveTo(PAD_L, gy); ctx.lineTo(W - PAD_R, gy); ctx.stroke();
+  ctx.restore();
+
+  // Goal label
+  ctx.fillStyle = colSuccess;
+  ctx.globalAlpha = 0.9;
+  ctx.textAlign = 'left';
+  ctx.font = '9px DM Mono, monospace';
+  ctx.fillText('Ziel', PAD_L + 4, gy - 3);
+  ctx.globalAlpha = 1;
+
+  if (entries.length === 0) return;
+
+  // Build cumulative points: start at (0, 0), then each entry
+  const points = [{x: 0, y: 0}];
+  let running = 0;
+  entries.forEach(e => {
+    const [hh, mm] = (e.time || '00:00').split(':').map(Number);
+    const mins = hh * 60 + mm;
+    running += e.ml;
+    points.push({ x: mins, y: running });
+  });
+  // Extend to current time (or end of day)
+  const now = new Date();
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+  points.push({ x: Math.min(nowMins, 1439), y: running });
+
+  // Fill area under curve
+  const grad = ctx.createLinearGradient(0, PAD_T, 0, H - PAD_B);
+  grad.addColorStop(0, '#3b9eff44');
+  grad.addColorStop(1, '#3b9eff00');
+  ctx.beginPath();
+  ctx.moveTo(xPos(points[0].x), yPos(points[0].y));
+  points.forEach(p => ctx.lineTo(xPos(p.x), yPos(p.y)));
+  ctx.lineTo(xPos(points[points.length-1].x), yPos(0));
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  ctx.strokeStyle = colWater;
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = 'round';
+  ctx.moveTo(xPos(points[0].x), yPos(points[0].y));
+  points.forEach(p => ctx.lineTo(xPos(p.x), yPos(p.y)));
+  ctx.stroke();
+
+  // Dots at each entry
+  entries.forEach(e => {
+    const [hh, mm] = (e.time || '00:00').split(':').map(Number);
+    const mins = hh * 60 + mm;
+    let cumY = 0;
+    entries.forEach(ee => {
+      const [ehh, emm] = (ee.time || '00:00').split(':').map(Number);
+      if (ehh * 60 + emm <= mins) cumY += ee.ml;
+    });
+    ctx.beginPath();
+    ctx.arc(xPos(mins), yPos(cumY), 4, 0, Math.PI * 2);
+    ctx.fillStyle = colWater;
+    ctx.fill();
+    ctx.strokeStyle = '#060f1e';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  });
 }
 
 function histNav(delta) {
