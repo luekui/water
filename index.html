@@ -485,7 +485,9 @@
 const LS_URL     = 'water_url';
 const LS_GOAL    = 'water_goal';
 const LS_PRESETS = 'water_presets';
-const CIRC = 2 * Math.PI * 80; // r=80
+const LS_CACHE   = 'water_cache';   // { date, total_ml, eintraege[] }
+const LS_QUEUE   = 'water_queue';   // [ { action, ml, index, time } ]
+const CIRC = 2 * Math.PI * 80;
 
 let config = {
   url:     localStorage.getItem(LS_URL) || '',
@@ -494,8 +496,50 @@ let config = {
 };
 
 let state = { datum: '', total_ml: 0, eintraege: [] };
-let histOffset = 0; // 0 = today, -1 = yesterday, etc.
+let histOffset = 0;
 let histData   = null;
+let syncTimer  = null;
+
+// ── LOCAL CACHE HELPERS ──────────────────────────────────────
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function nowTime() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+
+function loadCache() {
+  try {
+    const raw = localStorage.getItem(LS_CACHE);
+    if (!raw) return null;
+    const c = JSON.parse(raw);
+    // Only valid if same day
+    if (c.datum === todayStr()) return c;
+    return null;
+  } catch(e) { return null; }
+}
+
+function saveCache(s) {
+  localStorage.setItem(LS_CACHE, JSON.stringify(s));
+}
+
+function loadQueue() {
+  try { return JSON.parse(localStorage.getItem(LS_QUEUE) || '[]'); }
+  catch(e) { return []; }
+}
+
+function saveQueue(q) {
+  localStorage.setItem(LS_QUEUE, JSON.stringify(q));
+}
+
+function enqueue(op) {
+  const q = loadQueue();
+  q.push(op);
+  saveQueue(q);
+}
 
 // ── INIT ────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -509,10 +553,24 @@ document.addEventListener('DOMContentLoaded', () => {
 async function init() {
   updateDateLabel();
   renderPresets();
-  await loadToday();
+
+  // 1. Show cached data instantly
+  const cached = loadCache();
+  if (cached) {
+    state = cached;
+    renderHome();
+  }
+
+  // 2. Flush any pending queue ops first, then sync from sheet
+  await flushQueue();
+  await syncFromSheet();
+
   document.getElementById('custom-ml').addEventListener('keydown', e => {
     if (e.key === 'Enter') addCustom();
   });
+
+  // 3. Auto-sync every 5 minutes (in case another session added data)
+  setInterval(syncFromSheet, 5 * 60 * 1000);
 }
 
 function updateDateLabel() {
@@ -546,32 +604,84 @@ async function api(params) {
   return data;
 }
 
-async function loadToday() {
-  setLoading(true);
+// ── SYNC ────────────────────────────────────────────────────
+async function syncFromSheet() {
   try {
-    state = await api({ action: 'get' });
+    const fresh = await api({ action: 'get' });
+    state = fresh;
+    saveCache(fresh);
     renderHome();
-  } catch(e) { toast('Fehler: ' + e.message); }
-  setLoading(false);
+  } catch(e) {
+    // Offline or error – silently ignore, cached data stays
+  }
 }
 
-async function addMl(ml) {
-  setLoading(true);
+async function flushQueue() {
+  const q = loadQueue();
+  if (q.length === 0) return;
   try {
-    state = await api({ action: 'add', ml });
+    for (const op of q) {
+      if (op.action === 'add') {
+        await api({ action: 'add', ml: op.ml });
+      }
+      // delete ops are tricky after offline – skip for now (single device, rare)
+    }
+    saveQueue([]);
+  } catch(e) {
+    // Still offline – keep queue
+  }
+}
+
+// ── ADD / DELETE (optimistic) ────────────────────────────────
+async function addMl(ml) {
+  // 1. Optimistic: update local state immediately
+  const time = nowTime();
+  state.eintraege = state.eintraege || [];
+  state.eintraege.push({ ml, time });
+  state.total_ml = (state.total_ml || 0) + ml;
+  state.datum = state.datum || todayStr();
+  saveCache(state);
+  renderHome();
+  toast(`+${ml} ml 💧`);
+
+  // 2. Try to sync to sheet in background
+  try {
+    const fresh = await api({ action: 'add', ml });
+    state = fresh;
+    saveCache(fresh);
     renderHome();
-    toast(`+${ml} ml 💧`);
-  } catch(e) { toast('Fehler: ' + e.message); }
-  setLoading(false);
+  } catch(e) {
+    // Offline: enqueue for later
+    enqueue({ action: 'add', ml, time });
+    toast(`+${ml} ml 💧 (offline gespeichert)`);
+  }
 }
 
 async function deleteEntry(index) {
-  setLoading(true);
+  // 1. Optimistic: remove locally
+  const removed = state.eintraege.splice(index, 1)[0];
+  state.total_ml = state.eintraege.reduce((a, b) => a + b.ml, 0);
+  saveCache(state);
+  renderHome();
+
+  // 2. Sync to sheet
   try {
-    state = await api({ action: 'delete', index });
+    const fresh = await api({ action: 'delete', index });
+    state = fresh;
+    saveCache(fresh);
     renderHome();
-  } catch(e) { toast('Fehler: ' + e.message); }
-  setLoading(false);
+  } catch(e) {
+    // Offline: restore entry (delete can't be safely queued)
+    state.eintraege.splice(index, 0, removed);
+    state.total_ml += removed.ml;
+    saveCache(state);
+    renderHome();
+    toast('Offline – Löschen nicht möglich');
+  }
+}
+
+async function loadToday() {
+  await syncFromSheet();
 }
 
 // ── RENDER HOME ──────────────────────────────────────────────
@@ -651,17 +761,28 @@ async function loadHistory() {
     `<span class="day-nav-sub">${formatHistSub(histOffset)}</span>`;
 
   document.getElementById('hist-next').disabled = histOffset >= 0;
-  document.getElementById('hist-list').innerHTML = '<div class="hist-loading">Lade…</div>';
 
-  // Reset chart
-  drawChart([], config.goal);
+  // Show cached today-data instantly for offset=0
+  if (histOffset === 0 && state.eintraege) {
+    histData = state;
+    renderHistory();
+  } else {
+    document.getElementById('hist-list').innerHTML = '<div class="hist-loading">Lade…</div>';
+    drawChart([], config.goal);
+  }
 
+  // Always fetch fresh from sheet in background
   try {
-    histData = await api({ action: 'history', date: dateStr });
+    const fresh = await api({ action: 'history', date: dateStr });
+    histData = fresh;
+    // Also update state cache if it's today
+    if (histOffset === 0) { state = fresh; saveCache(fresh); }
     renderHistory();
   } catch(e) {
-    document.getElementById('hist-list').innerHTML =
-      `<div class="hist-loading">Fehler: ${e.message}</div>`;
+    if (!histData) {
+      document.getElementById('hist-list').innerHTML =
+        `<div class="hist-loading">Offline – keine Daten verfügbar</div>`;
+    }
   }
 }
 
@@ -864,9 +985,7 @@ function saveSettings() {
 }
 
 // ── HELPERS ─────────────────────────────────────────────────
-function setLoading(on) {
-  document.getElementById('loading').classList.toggle('show', on);
-}
+function setLoading(on) { /* no-op: optimistic UI, no blocking spinner */ }
 let toastTimer;
 function toast(msg) {
   const el = document.getElementById('toast');
