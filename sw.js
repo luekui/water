@@ -1,4 +1,4 @@
-const CACHE = "water-v8.0";
+const CACHE = "water-v9.0";
 const ASSETS = [
   "./index.html",
   "./manifest.json",
